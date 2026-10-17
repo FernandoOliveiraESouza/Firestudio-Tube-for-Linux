@@ -71,3 +71,7 @@ para guardar a da sua antes de mexer: `python3 tube.py save presets/minha-placa.
 O controle da placa é feito pelo `snd-dice-ctl-service`, do projeto
 [snd-firewire-ctl-services](https://github.com/alsa-project/snd-firewire-ctl-services)
 (Takashi Sakamoto), que não faz parte deste repositório.
+
+## Licença
+
+MIT — veja [LICENSE](LICENSE).
