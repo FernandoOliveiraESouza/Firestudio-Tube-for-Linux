@@ -1,0 +1,13 @@
+[Unit]
+Description=FireStudio Tube DSP control (snd-dice-ctl-service)
+After=pipewire.service
+
+[Service]
+ExecStart=%h/firestudio-tube/bin/firestudio-ctl-service
+# Stopping makes the service save the router/mixer to the device's flash.
+KillSignal=SIGTERM
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

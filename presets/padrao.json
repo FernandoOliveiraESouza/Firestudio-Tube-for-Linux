@@ -1,0 +1,822 @@
+{
+  "mixer_sources": [
+    "Analog-A-1",
+    "Analog-A-2",
+    "Analog-A-3",
+    "Analog-A-4",
+    "Analog-A-5",
+    "Analog-A-6",
+    "Analog-A-7",
+    "Analog-A-8",
+    "Analog-A-9",
+    "Analog-A-10",
+    "Analog-A-11",
+    "Analog-A-12",
+    "Analog-A-13",
+    "Analog-A-14",
+    "Analog-A-15",
+    "Analog-A-16",
+    "Stream-1",
+    "Stream-2"
+  ],
+  "mixer_gains": [
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      16384,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      16384
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      16384,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      16384
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      16384,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      16384
+    ],
+    [
+      0,
+      11598,
+      11598,
+      11598,
+      11598,
+      11598,
+      16383,
+      0,
+      0,
+      0,
+      16383,
+      0,
+      11598,
+      11598,
+      11598,
+      11598,
+      16384,
+      0
+    ],
+    [
+      0,
+      11598,
+      11598,
+      11598,
+      11598,
+      11598,
+      0,
+      16383,
+      0,
+      0,
+      0,
+      16383,
+      11598,
+      11598,
+      11598,
+      11598,
+      0,
+      16384
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "outputs": [
+    "Mixer-1",
+    "Mixer-2",
+    "Mixer-3",
+    "Mixer-4",
+    "Mixer-5",
+    "Mixer-6",
+    "Mixer-7",
+    "Mixer-8"
+  ],
+  "ui": {
+    "mixes": [
+      {
+        "master": 0.0,
+        "ch": [
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": -1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": 1.0,
+            "mute": false,
+            "solo": false
+          }
+        ]
+      },
+      {
+        "master": 0.0,
+        "ch": [
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": -1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": 1.0,
+            "mute": false,
+            "solo": false
+          }
+        ]
+      },
+      {
+        "master": 0.0,
+        "ch": [
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": -1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": 1.0,
+            "mute": false,
+            "solo": false
+          }
+        ]
+      },
+      {
+        "master": 0.0,
+        "ch": [
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -0.0005301608106181009,
+            "pan": -1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -0.0005301608106181009,
+            "pan": 1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -60.0,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -0.0005301608106181009,
+            "pan": -1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": -0.0005301608106181009,
+            "pan": 1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.009563258969010719,
+            "pan": 0.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": -1.0,
+            "mute": false,
+            "solo": false
+          },
+          {
+            "db": 0.0,
+            "pan": 1.0,
+            "mute": false,
+            "solo": false
+          }
+        ]
+      }
+    ],
+    "links": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ],
+    "out": 0
+  }
+}

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Starts snd-dice-ctl-service for the FireStudio Tube, whatever card number it got.
+# On SIGTERM the service writes the current router/mixer to the device's flash.
+set -eu
+
+here=$(cd "$(dirname "$0")/.." && pwd)
+card=$(sed -n 's/^ *\([0-9]\+\) .*DICE - FireStudio Tube.*/\1/p' /proc/asound/cards | head -n1)
+
+if [ -z "$card" ]; then
+    echo "FireStudio Tube não encontrada" >&2
+    exit 1
+fi
+
+export LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$here/src/snd-firewire-ctl-services/target/release/snd-dice-ctl-service" "$card"

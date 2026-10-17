@@ -1,0 +1,826 @@
+#!/usr/bin/env python3
+"""FireStudio Tube control panel, modelled on PreSonus Universal Control.
+
+Follows the Device Window described in section 3.1.4 of the FireStudio Tube
+manual: one zero-latency mix per stereo output (Main, Out 3-4, Out 5-6,
+Headphones), each with a Mixer On/Off switch (off = the DAW streams of that
+output go straight to it), a master fader, and channel strips with input
+selector, fader (-inf..+6 dB), pan, link, mute and solo.
+
+The DICE mixer only stores one gain per input and mixer output, so master,
+mute, solo and link are kept in ~/.config/firestudio-tube/state.json and the
+resulting gains are written to the device.
+"""
+
+import json
+import math
+import os
+import subprocess
+import sys
+import threading
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+import tube  # noqa: E402
+
+PRESETS = os.path.join(HERE, "presets")
+STATE_FILE = os.path.expanduser("~/.config/firestudio-tube/state.json")
+FADER_MIN, FADER_MAX, MASTER_MAX = -60.0, 6.0, 0.0
+METER_FLOOR = -60.0
+CLIP_DB = -0.5
+PEAK_HOLD_TICKS = 12  # ~1.5 s at 120 ms
+
+# Universal Control's four output mixes: (name, first physical output).
+# Mix k uses DICE mixer outputs 2k/2k+1 and, when its mixer is off, DAW streams 2k+1/2k+2.
+OUTPUTS = [("Main", 0), ("Out 3-4", 2), ("Out 5-6", 4), ("Fones", 6)]
+SOURCE_CHOICES = [f"Analog-A-{n}" for n in range(1, 17)] + [f"Stream-{n}" for n in range(1, 9)]
+
+CSS = b"""
+window, .background { background: #1b1c1f; color: #e3e3e3; }
+.strip { background: #2a2c30; border-radius: 6px; padding: 6px 4px; }
+.strip.daw { background: #24303c; }
+.master { background: #33302a; border-radius: 6px; padding: 6px; }
+.small { font-size: 10px; }
+.mono { font-family: monospace; font-size: 10px; color: #a8adb3; }
+.peak { font-family: monospace; font-size: 10px; color: #a8adb3; }
+.clip { font-family: monospace; font-size: 10px; color: #fff; background: #d03b2b; border-radius: 3px; }
+.section { font-weight: bold; font-size: 13px; }
+.outbtn { padding: 6px 16px; font-weight: bold; }
+button.mute:checked, button.mute:checked:hover {
+    background-image: none; background-color: #d32f2f; border-color: #8e1b1b; color: white; }
+button.solo:checked, button.solo:checked:hover {
+    background-image: none; background-color: #1e88e5; border-color: #0d4f8f; color: white; }
+button.link:checked, button.link:checked:hover {
+    background-image: none; background-color: #546e7a; border-color: #2f3f46; color: white; }
+.hint { font-size: 11px; color: #9aa0a6; }
+levelbar block.filled { background: #3ec46d; }
+levelbar block.high { background: #e5c33a; }
+levelbar block.full { background: #e5533a; }
+levelbar block.empty { background: #111214; }
+"""
+
+
+def fmt_db(db):
+    if db <= FADER_MIN:
+        return "-∞"
+    return "0.0" if abs(db) < 0.05 else f"{db:+.1f}"
+
+
+def meter_db(raw):
+    return tube.meter_to_db(raw)
+
+
+def meter_fraction(db):
+    return 0.0 if db == -math.inf else max(0.0, min(1.0, (db - METER_FLOOR) / -METER_FLOOR))
+
+
+def ctrl_click_resets(scale, default):
+    """Ctrl + click puts the control back to its default position."""
+    def pressed(_w, event):
+        if event.button == 1 and event.state & Gdk.ModifierType.CONTROL_MASK:
+            scale.set_value(default)
+            return True
+        return False
+    scale.connect("button-press-event", pressed)
+
+
+def new_meter(vertical=True, length=170):
+    bar = Gtk.LevelBar(min_value=0.0, max_value=1.0)
+    bar.set_orientation(Gtk.Orientation.VERTICAL if vertical else Gtk.Orientation.HORIZONTAL)
+    bar.set_inverted(vertical)
+    bar.remove_offset_value(Gtk.LEVEL_BAR_OFFSET_LOW)
+    bar.remove_offset_value(Gtk.LEVEL_BAR_OFFSET_HIGH)
+    bar.add_offset_value("high", 1 - 12 / -METER_FLOOR)   # -12 dBFS
+    bar.add_offset_value("full", 1 - 3 / -METER_FLOOR)    # -3 dBFS
+    bar.set_size_request(7, length) if vertical else bar.set_size_request(length, 7)
+    return bar
+
+
+class Peak:
+    """Peak-hold readout above a meter, showing CLIP like Universal Control."""
+
+    def __init__(self):
+        self.label = Gtk.Label(label="-∞", width_chars=5)
+        self.label.get_style_context().add_class("peak")
+        self.value = -math.inf
+        self.ticks = 0
+        self.clipped = False
+
+    def update(self, db, clipped=False):
+        if db >= self.value or self.ticks <= 0:
+            self.value, self.ticks = db, PEAK_HOLD_TICKS
+        else:
+            self.ticks -= 1
+        self.clipped = self.clipped or clipped or db >= CLIP_DB
+        ctx = self.label.get_style_context()
+        if self.clipped:
+            self.label.set_text("CLIP")
+            ctx.add_class("clip")
+        else:
+            self.label.set_text("-∞" if self.value == -math.inf else f"{self.value:.0f}")
+            ctx.remove_class("clip")
+
+    def reset(self):
+        self.clipped = False
+        self.value = -math.inf
+
+
+# ----------------------------------------------------------------------------
+# Mix state (master, mute, solo, link are not stored on the device)
+# ----------------------------------------------------------------------------
+
+def blank_channel():
+    return {"db": FADER_MIN, "pan": 0.0, "mute": False, "solo": False}
+
+
+def blank_state():
+    return {"mixes": [{"master": 0.0, "ch": [blank_channel() for _ in range(tube.MIXER_INPUTS)]}
+                      for _ in OUTPUTS],
+            "links": [False] * (tube.MIXER_INPUTS // 2)}
+
+
+def mix_gains(state, k):
+    """Gains (left row, right row) to write to the device for output mix k."""
+    mix = state["mixes"][k]
+    solo = any(c["solo"] for c in mix["ch"])
+    left, right = [], []
+    for c in mix["ch"]:
+        if c["mute"] or (solo and not c["solo"]) or c["db"] <= FADER_MIN or \
+                mix["master"] <= FADER_MIN:
+            l = r = 0
+        else:
+            l, r = tube.level_pan_to_stereo(tube.db_to_gain(c["db"] + mix["master"]), c["pan"])
+        left.append(l)
+        right.append(r)
+    return left, right
+
+
+def mix_from_device(left, right):
+    mix = {"master": 0.0, "ch": []}
+    for l, r in zip(left, right):
+        level, pan = tube.stereo_to_level_pan(l, r)
+        db = tube.gain_to_db(level)
+        mix["ch"].append({"db": FADER_MIN if db == -math.inf else max(FADER_MIN, min(FADER_MAX, db)),
+                          "pan": max(-1.0, min(1.0, pan)), "mute": False, "solo": False})
+    return mix
+
+
+def close(a, b):
+    return all(abs(x - y) <= 2 for x, y in zip(a, b))
+
+
+def load_state(t):
+    """Saved UI state, re-derived from the device for any mix changed elsewhere."""
+    try:
+        with open(STATE_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    state = saved if isinstance(saved.get("mixes"), list) and \
+        len(saved["mixes"]) == len(OUTPUTS) else dict(blank_state(), out=saved.get("out", 0))
+    for k in range(len(OUTPUTS)):
+        dev_l, dev_r = t.mixer_gains(2 * k), t.mixer_gains(2 * k + 1)
+        l, r = mix_gains(state, k)
+        if not (close(l, dev_l) and close(r, dev_r)):
+            state["mixes"][k] = mix_from_device(dev_l, dev_r)
+    return state
+
+
+def save_state(state):
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=1)
+
+
+# ----------------------------------------------------------------------------
+# Widgets
+# ----------------------------------------------------------------------------
+
+class Strip(Gtk.Box):
+    """One mixer channel: input selector, mute/solo, peak, meter, fader, pan, link."""
+
+    def __init__(self, panel, slot):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        self.panel, self.slot, self.updating = panel, slot, False
+        self.get_style_context().add_class("strip")
+
+        self.source = Gtk.ComboBoxText()
+        for item in SOURCE_CHOICES:
+            self.source.append(item, tube.source_label(item))
+        self.source.get_style_context().add_class("small")
+        self.source.connect("changed", self.source_changed)
+        self.pack_start(self.source, False, False, 0)
+
+        buttons = Gtk.Box(spacing=2, homogeneous=True)
+        self.mute = Gtk.ToggleButton(label="M", tooltip_text="Mute")
+        self.solo = Gtk.ToggleButton(label="S", tooltip_text="Solo")
+        self.mute.get_style_context().add_class("mute")
+        self.solo.get_style_context().add_class("solo")
+        for b in (self.mute, self.solo):
+            b.connect("toggled", self.changed)
+            buttons.pack_start(b, True, True, 0)
+        self.pack_start(buttons, False, False, 0)
+
+        self.peak = Peak()
+        self.pack_start(self.peak.label, False, False, 0)
+
+        mid = Gtk.Box(spacing=3, halign=Gtk.Align.CENTER)
+        self.fader = Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL, FADER_MIN, FADER_MAX, 0.5)
+        self.fader.set_inverted(True)
+        self.fader.set_draw_value(False)
+        self.fader.add_mark(0, Gtk.PositionType.LEFT, None)
+        self.fader.set_size_request(-1, 170)
+        self.fader.connect("value-changed", self.changed)
+        self.fader.set_tooltip_text("Ctrl + clique volta para 0 dB")
+        ctrl_click_resets(self.fader, 0.0)
+        self.meter = new_meter()
+        mid.pack_start(self.fader, False, False, 0)
+        mid.pack_start(self.meter, False, False, 0)
+        self.pack_start(mid, True, True, 0)
+
+        self.db = Gtk.Label()
+        self.db.get_style_context().add_class("mono")
+        self.pack_start(self.db, False, False, 0)
+
+        self.pan = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -1, 1, 0.05)
+        self.pan.set_draw_value(False)
+        self.pan.add_mark(0, Gtk.PositionType.BOTTOM, None)
+        self.pan.set_size_request(70, -1)
+        self.pan.set_tooltip_text("Pan — duplo clique ou Ctrl + clique centraliza")
+        self.pan.connect("value-changed", self.changed)
+        ctrl_click_resets(self.pan, 0.0)
+        self.pan.connect("button-press-event", self.pan_reset)
+        self.pack_start(self.pan, False, False, 0)
+
+        # Link button sits on the first channel of each pair (1-2, 3-4, ...)
+        if slot % 2 == 0:
+            self.link = Gtk.ToggleButton(label="Link ↔", tooltip_text=(
+                "Liga este canal ao próximo como par estéreo: mesmo nível, pan L/R"))
+            self.link.get_style_context().add_class("link")
+            self.link.get_style_context().add_class("small")
+            self.link.connect("toggled", self.link_toggled)
+            self.pack_start(self.link, False, False, 0)
+        else:
+            self.link = None
+            self.pack_start(Gtk.Label(label=" "), False, False, 4)
+
+    def display(self, source, ch, linked_partner):
+        self.updating = True
+        self.source.set_active_id(source if source in SOURCE_CHOICES else None)
+        (self.get_style_context().add_class if source.startswith("Stream")
+         else self.get_style_context().remove_class)("daw")
+        self.fader.set_value(ch["db"])
+        self.pan.set_value(ch["pan"])
+        self.mute.set_active(ch["mute"])
+        self.solo.set_active(ch["solo"])
+        self.db.set_text(fmt_db(ch["db"]))
+        self.pan.set_sensitive(not linked_partner)
+        self.updating = False
+
+    def show_link(self, linked):
+        if self.link:
+            self.updating = True
+            self.link.set_active(linked)
+            self.updating = False
+
+    def pan_reset(self, _w, event):
+        if event.button == 1 and event.type == Gdk.EventType._2BUTTON_PRESS:
+            self.pan.set_value(0)
+            return True
+        return False
+
+    def changed(self, _w):
+        if self.updating:
+            return
+        self.db.set_text(fmt_db(self.fader.get_value()))
+        self.panel.channel_changed(self.slot, {
+            "db": self.fader.get_value(), "pan": self.pan.get_value(),
+            "mute": self.mute.get_active(), "solo": self.solo.get_active()})
+
+    def source_changed(self, combo):
+        if not self.updating and combo.get_active_id():
+            self.panel.source_changed(self.slot, combo.get_active_id())
+
+    def link_toggled(self, btn):
+        if not self.updating:
+            self.panel.link_changed(self.slot // 2, btn.get_active())
+
+
+class Panel(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="FireStudio Tube")
+        self.set_default_size(1400, 560)
+        self.tube = None
+        self.state = None
+        self.out = 0
+        self.flush_id = None
+
+        header = Gtk.HeaderBar(show_close_button=True)
+        self.set_titlebar(header)
+        self.set_title("FireStudio Tube")
+        self.set_icon_from_file(os.path.join(HERE, "assets", "firestudio-tube.svg"))
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        header.set_custom_title(Gtk.StackSwitcher(stack=self.stack))
+        self.status = Gtk.Label()
+        self.status.get_style_context().add_class("hint")
+        header.pack_end(self.status)
+        self.add(self.stack)
+
+        self.build_mixer()
+        self.build_settings()
+        self.build_presets()
+        # Shown instead of the tabs when the device or the service is missing.
+        self.error = Gtk.Label(wrap=True, margin=30)
+        self.stack.add_named(self.error, "status")
+
+        self.show_all()
+        self.error.hide()  # a hidden page gets no (empty) button in the switcher
+        self.connect_device()
+        GLib.timeout_add(120, self.poll_meters)
+
+    # Device ---------------------------------------------------------------------
+    def connect_device(self, page="mixer"):
+        try:
+            self.tube = tube.Tube()
+            self.tube.enable_metering()
+            self.state = load_state(self.tube)
+        except (RuntimeError, subprocess.CalledProcessError, KeyError) as e:
+            self.tube = None
+            self.error.set_text(f"{e}\n\nLigue a placa e rode:\n"
+                                "systemctl --user restart firestudio-tube-ctl")
+            self.error.show()
+            self.stack.set_visible_child_name("status")
+            self.status.set_text("desconectada")
+            return False
+        self.show_clock()
+        self.out = self.state.get("out", 0) if 0 <= self.state.get("out", 0) < len(OUTPUTS) else 0
+        self.show_output()
+        self.error.hide()
+        self.stack.set_visible_child_name(page)
+        self.strips_scroll.get_hadjustment().set_value(0)
+        return False
+
+    def mixer_on(self, k):
+        return self.tube.output_sources()[OUTPUTS[k][1]] == f"Mixer-{2 * k + 1}"
+
+    # Mixer page -------------------------------------------------------------------
+    def build_mixer(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+
+        # Output Select section
+        top = Gtk.Box(spacing=6)
+        self.out_buttons = []
+        group = None
+        for k, (name, _) in enumerate(OUTPUTS):
+            btn = Gtk.RadioButton.new_with_label_from_widget(group, name)
+            btn.set_mode(False)
+            btn.get_style_context().add_class("outbtn")
+            btn.connect("toggled", self.output_selected, k)
+            group = group or btn
+            top.pack_start(btn, False, False, 0)
+            self.out_buttons.append(btn)
+
+        top.pack_start(Gtk.Label(label="   Mixer"), False, False, 0)
+        self.mixer_switch = Gtk.Switch(valign=Gtk.Align.CENTER, tooltip_text=(
+            "Ligado: mix com latência zero para esta saída.\n"
+            "Desligado: os canais DAW desta saída vão direto para ela."))
+        self.mixer_switch.connect("notify::active", self.mixer_toggled)
+        top.pack_start(self.mixer_switch, False, False, 0)
+        self.mode_label = Gtk.Label(xalign=0)
+        self.mode_label.get_style_context().add_class("hint")
+        top.pack_start(self.mode_label, True, True, 8)
+        page.pack_start(top, False, False, 0)
+
+        body = Gtk.Box(spacing=8)
+        self.strips_box = Gtk.Box(spacing=4)
+        self.strips = [Strip(self, s) for s in range(tube.MIXER_INPUTS)]
+        for s in self.strips:
+            self.strips_box.pack_start(s, False, False, 0)
+        self.strips_scroll = Gtk.ScrolledWindow()
+        self.strips_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        self.strips_scroll.add(self.strips_box)
+        body.pack_start(self.strips_scroll, True, True, 0)
+
+        # Master Output section
+        master = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        master.get_style_context().add_class("master")
+        self.master_title = Gtk.Label()
+        self.master_title.get_style_context().add_class("section")
+        master.pack_start(self.master_title, False, False, 0)
+        clear = Gtk.Box(spacing=2, homogeneous=True)
+        self.clear_mute = Gtk.Button(label="M clr", tooltip_text="Limpar todos os mutes")
+        self.clear_solo = Gtk.Button(label="S clr", tooltip_text="Limpar todos os solos")
+        self.clear_mute.connect("clicked", self.clear_flags, "mute")
+        self.clear_solo.connect("clicked", self.clear_flags, "solo")
+        clear.pack_start(self.clear_mute, True, True, 0)
+        clear.pack_start(self.clear_solo, True, True, 0)
+        master.pack_start(clear, False, False, 0)
+        peaks = Gtk.Box(spacing=2, homogeneous=True)
+        self.out_peaks = (Peak(), Peak())
+        for p in self.out_peaks:
+            peaks.pack_start(p.label, True, True, 0)
+        peaks_events = Gtk.EventBox(tooltip_text="Clique para limpar o CLIP")
+        peaks_events.add(peaks)
+        peaks_events.connect("button-press-event", self.reset_out_peaks)
+        master.pack_start(peaks_events, False, False, 0)
+        mid = Gtk.Box(spacing=3, halign=Gtk.Align.CENTER)
+        self.master = Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL, FADER_MIN, MASTER_MAX, 0.5)
+        self.master.set_inverted(True)
+        self.master.set_draw_value(False)
+        self.master.set_size_request(-1, 170)
+        self.master.connect("value-changed", self.master_changed)
+        self.master.set_tooltip_text("Ctrl + clique volta para 0 dB")
+        ctrl_click_resets(self.master, 0.0)
+        self.out_meters = (new_meter(), new_meter())
+        mid.pack_start(self.master, False, False, 0)
+        for m in self.out_meters:
+            mid.pack_start(m, False, False, 0)
+        master.pack_start(mid, True, True, 0)
+        self.master_db = Gtk.Label()
+        self.master_db.get_style_context().add_class("mono")
+        master.pack_start(self.master_db, False, False, 0)
+        body.pack_start(master, False, False, 0)
+        page.pack_start(body, True, True, 0)
+
+        hint = Gtk.Label(xalign=0, wrap=True, label=(
+            "Cada saída tem sua própria mix com latência zero (feita no DSP da placa). "
+            "O som do computador (saída “FireStudio Tube”) entra nas mixes como DAW 1-2: use o "
+            "fader ou o M de DAW 1-2 em cada saída para escolher onde ele toca. DAWs com acesso "
+            "aos 8 canais (Pro Audio) também enviam DAW 3-8. "
+            "Os medidores dos canais são pré-fader; os da saída mostram o nível real."))
+        hint.get_style_context().add_class("hint")
+        page.pack_start(hint, False, False, 0)
+        self.stack.add_titled(page, "mixer", "Mixer")
+
+    def reset_out_peaks(self, *_args):
+        for p in self.out_peaks:
+            p.reset()
+        return True
+
+    def output_selected(self, btn, k):
+        if btn.get_active():
+            self.out = k
+            self.reset_out_peaks()
+            if self.tube:
+                self.state["out"] = k
+                save_state(self.state)
+                self.show_output()
+
+    def show_output(self):
+        k = self.out
+        self.out_buttons[k].set_active(True)
+        on = self.mixer_on(k)
+        self.updating_switch = True
+        self.mixer_switch.set_active(on)
+        self.updating_switch = False
+        name = OUTPUTS[k][0]
+        first = 2 * k + 1
+        if on:
+            self.mode_label.set_text(f"Mix com latência zero → {name}")
+        else:
+            outs = self.tube.output_sources()[OUTPUTS[k][1]:OUTPUTS[k][1] + 2]
+            direct = outs == [f"Stream-{first}", f"Stream-{first + 1}"]
+            self.mode_label.set_text(
+                f"Mixer desligado: DAW {first}-{first + 1} direto em {name}" if direct else
+                f"Mixer desligado: {name} recebe {' / '.join(map(tube.source_label, outs))}")
+        self.strips_box.set_sensitive(on)
+        self.master.set_sensitive(on)
+
+        sources = self.tube.mixer_sources()
+        mix = self.state["mixes"][k]
+        links = self.state["links"]
+        for s, strip in enumerate(self.strips):
+            strip.display(sources[s], mix["ch"][s], s % 2 == 1 and links[s // 2])
+            strip.show_link(links[s // 2])
+        self.master_title.set_text(name)
+        self.updating_master = True
+        self.master.set_value(mix["master"])
+        self.updating_master = False
+        self.master_db.set_text(fmt_db(mix["master"]))
+
+    def mixer_toggled(self, switch, _param):
+        if not self.tube or getattr(self, "updating_switch", False):
+            return
+        k = self.out
+        start = OUTPUTS[k][1]
+        outs = self.tube.output_sources()
+        kind = "Mixer" if switch.get_active() else "Stream"
+        outs[start:start + 2] = [f"{kind}-{2 * k + 1}", f"{kind}-{2 * k + 2}"]
+        self.tube.set_output_sources(outs)
+        self.show_output()
+
+    def channel_changed(self, slot, values):
+        mix = self.state["mixes"][self.out]
+        mix["ch"][slot].update(values)
+        if self.state["links"][slot // 2]:
+            partner = slot ^ 1
+            for key in ("db", "mute", "solo"):
+                mix["ch"][partner][key] = values[key]
+            self.strips[partner].display(self.tube.mixer_sources()[partner], mix["ch"][partner], True)
+        self.queue_flush()
+
+    def master_changed(self, scale):
+        if getattr(self, "updating_master", False):
+            return
+        self.state["mixes"][self.out]["master"] = scale.get_value()
+        self.master_db.set_text(fmt_db(scale.get_value()))
+        self.queue_flush()
+
+    def clear_flags(self, _b, key):
+        for c in self.state["mixes"][self.out]["ch"]:
+            c[key] = False
+        self.show_output()
+        self.queue_flush()
+
+    def link_changed(self, pair, linked):
+        self.state["links"][pair] = linked
+        if linked:
+            # Universal Control: linked channels share the level, panned hard left/right.
+            for mix in self.state["mixes"]:
+                a, b = mix["ch"][2 * pair], mix["ch"][2 * pair + 1]
+                b["db"], b["mute"], b["solo"] = a["db"], a["mute"], a["solo"]
+                a["pan"], b["pan"] = -1.0, 1.0
+            self.flush_all()
+        self.show_output()
+        save_state(self.state)
+
+    def source_changed(self, slot, item):
+        sources = self.tube.mixer_sources()
+        sources[slot] = item
+        self.tube.set_mixer_sources(sources)
+        self.show_output()
+
+    def queue_flush(self):
+        if self.flush_id is None:
+            self.flush_id = GLib.timeout_add(40, self.flush)
+
+    def flush(self):
+        self.flush_id = None
+        k = self.out
+        left, right = mix_gains(self.state, k)
+        try:
+            self.tube.set_mixer_gains(2 * k, left)
+            self.tube.set_mixer_gains(2 * k + 1, right)
+            save_state(self.state)
+        except subprocess.CalledProcessError:
+            self.connect_device()
+        return False
+
+    def flush_all(self):
+        for k in range(len(OUTPUTS)):
+            left, right = mix_gains(self.state, k)
+            self.tube.set_mixer_gains(2 * k, left)
+            self.tube.set_mixer_gains(2 * k + 1, right)
+
+    # Settings page (Universal Control's Launch Window) ------------------------------
+    def build_settings(self):
+        grid = Gtk.Grid(column_spacing=14, row_spacing=12, margin=20)
+        title = Gtk.Label(xalign=0, label="Áudio")
+        title.get_style_context().add_class("section")
+        grid.attach(title, 0, 0, 3, 1)
+
+        grid.attach(Gtk.Label(label="Sample rate", xalign=0), 0, 1, 1, 1)
+        self.rate_combo = Gtk.ComboBoxText()
+        for r in tube.SAMPLE_RATES:
+            self.rate_combo.append(str(r), f"{r / 1000:g} kHz")
+        grid.attach(self.rate_combo, 1, 1, 1, 1)
+
+        grid.attach(Gtk.Label(label="Buffer size", xalign=0), 0, 2, 1, 1)
+        self.buffer_combo = Gtk.ComboBoxText()
+        for q in tube.BUFFER_SIZES:
+            self.buffer_combo.append(str(q), f"{q} amostras")
+        grid.attach(self.buffer_combo, 1, 2, 1, 1)
+        self.latency = Gtk.Label(xalign=0)
+        self.latency.get_style_context().add_class("hint")
+        grid.attach(self.latency, 2, 2, 1, 1)
+        for combo in (self.rate_combo, self.buffer_combo):
+            combo.connect("changed", self.clock_edited)
+
+        actions = Gtk.Box(spacing=10)
+        self.clock_apply = Gtk.Button(label="Aplicar")
+        self.clock_apply.connect("clicked", self.apply_clock)
+        self.clock_spinner = Gtk.Spinner()
+        self.clock_msg = Gtk.Label(xalign=0)
+        self.clock_msg.get_style_context().add_class("hint")
+        actions.pack_start(self.clock_apply, False, False, 0)
+        actions.pack_start(self.clock_spinner, False, False, 0)
+        actions.pack_start(self.clock_msg, False, False, 0)
+        grid.attach(actions, 0, 3, 3, 1)
+
+        hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=95, label=(
+            "Como no Universal Control: taxa mais alta = mais fidelidade e arquivos maiores; "
+            "buffer menor = menos latência, mas pode estalar se o PC não der conta (512 é um "
+            "bom equilíbrio; para gravar com instrumentos virtuais, 128–256). "
+            "No Linux o PipeWire é quem abre a placa, então todo o áudio do sistema passa a usar "
+            "esses valores. A placa guarda o roteamento separado para 44,1/48 kHz e para "
+            "88,2/96 kHz: ao trocar de faixa, o painel reaplica e grava a sua configuração."))
+        hint.get_style_context().add_class("hint")
+        grid.attach(hint, 0, 4, 3, 1)
+        self.stack.add_titled(grid, "config", "Configurações")
+
+    def show_clock(self):
+        rate, quantum = tube.current_clock()
+        self.updating_clock = True
+        self.rate_combo.set_active_id(str(rate))
+        self.buffer_combo.set_active_id(str(quantum))
+        self.updating_clock = False
+        self.clock_edited(None)
+        self.status.set_text(f"{rate / 1000:g} kHz · buffer {quantum}"
+                             f"{'' if self.tube.locked() else ' · clock NÃO travado'}")
+
+    def chosen_clock(self):
+        rate = int(self.rate_combo.get_active_id() or 48000)
+        quantum = int(self.buffer_combo.get_active_id() or 1024)
+        return rate, quantum
+
+    def clock_edited(self, _combo):
+        rate, quantum = self.chosen_clock()
+        self.latency.set_text(f"{1000 * quantum / rate:.1f} ms por buffer")
+        if not getattr(self, "updating_clock", False):
+            self.clock_msg.set_text("")
+
+    def apply_clock(self, _b):
+        if not self.tube:
+            return
+        rate, quantum = self.chosen_clock()
+        old_rate = tube.current_clock()[0]
+        desired = self.tube.snapshot()
+        self.clock_apply.set_sensitive(False)
+        self.clock_spinner.start()
+        self.clock_msg.set_text("Aplicando…")
+        self.tube = None  # pause the meters while the device reconfigures
+
+        def work():
+            error = None
+            try:
+                tube.set_clock(rate, quantum)
+                if rate != old_rate:
+                    # The DICE reloads its router from flash when the rate changes:
+                    # wait for it, put the configuration back and store it for this rate.
+                    t = None
+                    for attempt in range(30):
+                        if attempt % 5 == 0:
+                            tube.wake_stream()
+                        try:
+                            t = tube.Tube()
+                            if int(t.sample_rate()) == rate:
+                                break
+                        except (RuntimeError, subprocess.CalledProcessError, KeyError):
+                            pass
+                        t = None
+                        GLib.usleep(300_000)
+                    if t is None:
+                        raise RuntimeError("a placa não mudou de taxa")
+                    GLib.usleep(1_500_000)  # let the device finish reloading its flash
+                    tube.apply_and_store(desired)
+            except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
+                error = str(e)
+            GLib.idle_add(done, error)
+
+        def done(error):
+            self.clock_spinner.stop()
+            self.clock_apply.set_sensitive(True)
+            self.connect_device(page="config")
+            self.clock_msg.set_text(f"Erro: {error}" if error else
+                                    f"Pronto: {rate / 1000:g} kHz, buffer {quantum}.")
+            return False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # Presets page -------------------------------------------------------------------
+    def build_presets(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=20)
+
+        def section(text):
+            label = Gtk.Label(xalign=0, label=text)
+            label.get_style_context().add_class("section")
+            box.pack_start(label, False, False, 6)
+
+        def button(text, cb, tip):
+            b = Gtk.Button(label=text, tooltip_text=tip, halign=Gtk.Align.START)
+            b.connect("clicked", cb)
+            box.pack_start(b, False, False, 0)
+
+        section("Presets")
+        button("Padrão — som do computador em todas as saídas",
+               lambda _b: self.apply_file(os.path.join(PRESETS, "padrao.json")),
+               "Todas as saídas com mixer ligado e DAW 1-2 a 0 dB; "
+               "Fones também com a monitoração das entradas")
+        button("Configuração original da placa",
+               lambda _b: self.apply_file(os.path.join(PRESETS, "original-da-placa.json")),
+               "O que estava gravado na placa antes (vindo do Universal Control)")
+        button("Abrir preset…", self.open_preset, "Carregar um arquivo .json")
+        button("Salvar preset…", self.save_preset, "Salvar mixes, roteamento e master em .json")
+
+        section("Memória da placa")
+        button("Gravar na placa", self.store,
+               "Grava roteamento e mixer na memória da FireStudio")
+        hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=95, label=(
+            "Todas as mudanças valem na hora. “Gravar na placa” guarda a configuração na "
+            "memória da própria FireStudio, para ela já ligar assim. Isso também acontece "
+            "automaticamente quando o serviço para (ao desligar o PC)."))
+        hint.get_style_context().add_class("hint")
+        box.pack_start(hint, False, False, 0)
+        self.stack.add_titled(box, "presets", "Presets")
+
+    def apply_file(self, path):
+        if not self.tube:
+            return
+        preset = tube.load_preset(path)
+        self.tube.apply(preset)
+        self.state = preset["ui"] if "ui" in preset else load_state(self.tube)
+        save_state(self.state)
+        self.show_output()
+
+    def file_dialog(self, action, accept):
+        dialog = Gtk.FileChooserNative(title="Preset", transient_for=self, action=action,
+                                       accept_label=accept)
+        dialog.set_current_folder(PRESETS)
+        flt = Gtk.FileFilter()
+        flt.set_name("Presets (.json)")
+        flt.add_pattern("*.json")
+        dialog.add_filter(flt)
+        if action == Gtk.FileChooserAction.SAVE:
+            dialog.set_do_overwrite_confirmation(True)
+            dialog.set_current_name("meu-preset.json")
+        path = dialog.get_filename() if dialog.run() == Gtk.ResponseType.ACCEPT else None
+        dialog.destroy()
+        return path
+
+    def open_preset(self, _b):
+        path = self.file_dialog(Gtk.FileChooserAction.OPEN, "Abrir")
+        if path:
+            self.apply_file(path)
+
+    def save_preset(self, _b):
+        path = self.file_dialog(Gtk.FileChooserAction.SAVE, "Salvar")
+        if path and self.tube:
+            preset = self.tube.snapshot()
+            preset["ui"] = self.state
+            tube.save_preset(path if path.endswith(".json") else path + ".json", preset)
+
+    def store(self, _b):
+        # snd-dice-ctl-service writes the configuration to flash when it stops;
+        # systemd starts it again right away.
+        result = subprocess.run(["systemctl", "--user", "restart", "firestudio-tube-ctl"],
+                                capture_output=True, text=True)
+        ok = result.returncode == 0
+        msg = Gtk.MessageDialog(transient_for=self, modal=True, buttons=Gtk.ButtonsType.OK,
+                                message_type=Gtk.MessageType.INFO if ok else Gtk.MessageType.ERROR,
+                                text="Configuração gravada na placa." if ok
+                                else "Não foi possível gravar.",
+                                secondary_text=None if ok else result.stderr.strip())
+        msg.run()
+        msg.destroy()
+        self.tube = None
+        GLib.timeout_add(2500, self.connect_device)
+
+    # Meters -----------------------------------------------------------------------
+    def poll_meters(self):
+        if not self.tube:
+            return True
+        try:
+            ins, outs = self.tube.read_meters()
+            sat = self.tube.read_saturation()
+        except (subprocess.CalledProcessError, KeyError, IndexError, ValueError):
+            return True
+        for strip, raw in zip(self.strips, ins):
+            db = meter_db(raw)
+            strip.meter.set_value(meter_fraction(db))
+            strip.peak.update(db)
+        k, start = self.out, OUTPUTS[self.out][1]
+        on = self.mixer_on(k)
+        for i, (meter, peak) in enumerate(zip(self.out_meters, self.out_peaks)):
+            db = meter_db(outs[start + i])
+            meter.set_value(meter_fraction(db))
+            peak.update(db, clipped=on and sat[2 * k + i])
+        return True
+
+
+def main():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
+    # Single instance: two panels would each write their own state over the other's.
+    app = Gtk.Application(application_id="local.firestudio_tube.Control")
+
+    def activate(app):
+        if app.get_windows():
+            app.get_windows()[0].present()
+        else:
+            app.add_window(Panel())
+
+    app.connect("activate", activate)
+    app.run(None)
+
+
+if __name__ == "__main__":
+    main()

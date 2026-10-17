@@ -1,0 +1,6 @@
+# Dependencies cloned and built by install.sh
+src/
+# Local dumps of this device's controls and the PreSonus manual (not ours to publish)
+backup/
+*.pdf
+__pycache__/
